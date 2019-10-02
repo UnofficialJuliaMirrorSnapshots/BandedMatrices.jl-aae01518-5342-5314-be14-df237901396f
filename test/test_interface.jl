@@ -1,6 +1,6 @@
 using BandedMatrices, LinearAlgebra, LazyArrays, FillArrays, Test, Base64
-import BandedMatrices: banded_mul!, isbanded, AbstractBandedLayout, BandedStyle, rowsupport, colsupport, _BandedMatrix
-import LazyArrays: MemoryLayout, Applied
+import BandedMatrices: banded_mul!, isbanded, AbstractBandedLayout, BandedStyle, rowsupport, colsupport, _BandedMatrix, BroadcastBandedLayout
+import LazyArrays: MemoryLayout, Applied, resizedata!
 
 
 struct PseudoBandedMatrix{T} <: AbstractMatrix{T}
@@ -117,11 +117,12 @@ end
 
     A =  brand(5,5,1,1)
 
+    @test D*A isa BandedMatrix
+    @test D*A == D*Matrix(A)
+
     @test A*D isa BandedMatrix
     @test A*D == Matrix(A)*D
 
-    @test D*A isa BandedMatrix
-    @test D*A == D*Matrix(A)
 
     D = Diagonal(rand(Int,10))
     B = brand(10,10,-1,2)
@@ -180,6 +181,7 @@ end
     @test isbanded(M) && isbanded(Applied(M))
     @test bandwidths(M) == bandwidths(Applied(M))
     @test BandedMatrix(M) == A*B
+    MemoryLayout(typeof(M))
     @test colsupport(M,1) == colsupport(Applied(M),1) == 1:2
     @test rowsupport(M,1) == rowsupport(Applied(M),1) == 1:2
 
@@ -256,13 +258,31 @@ end
     @test bandwidths(isone.(V)) == (14,1)
 end
 
+@testset "BroadcastMatrix" begin
+    A = BroadcastMatrix(*, brand(5,5,1,2), brand(5,5,2,1))
+    @test eltype(A) == Float64
+    @test bandwidths(A) == (1,1)
+    @test LazyArrays.colsupport(A, 1) == 1:2
+    @test A == broadcast(*, A.args...)
+
+    B = BroadcastMatrix(+, brand(5,5,1,2), 2)
+    @test B == broadcast(+, B.args...)
+
+    C = BroadcastMatrix(+, brand(5,5,1,2), brand(5,5,3,1))
+    @test bandwidths(C) == (3,2)
+    @test MemoryLayout(typeof(C)) == BroadcastBandedLayout()
+    @test isbanded(C) == true
+    @test BandedMatrix(C) == C
+end
+
 @testset "Cache" begin
     A = _BandedMatrix(Fill(1,3,10_000), 10_000, 1, 1)
-    C = cache(A)
+    C = cache(A);
     @test C.data isa BandedMatrix{Int,Matrix{Int},Base.OneTo{Int}}
     @test colsupport(C,1) == rowsupport(C,1) == 1:2
     @test bandwidths(C) == bandwidths(A) == (1,1)
     @test isbanded(C) 
+    resizedata!(C,1,1);
     @test C[1:10,1:10] == A[1:10,1:10]
     @test C[1:10,1:10] isa BandedMatrix
 end

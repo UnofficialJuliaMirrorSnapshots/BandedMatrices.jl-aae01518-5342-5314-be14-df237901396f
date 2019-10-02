@@ -1,6 +1,7 @@
 using BandedMatrices, LinearAlgebra, LazyArrays, Test
 import LazyArrays: MemoryLayout, MulAdd, DenseColumnMajor, ConjLayout
 import Base: BroadcastStyle
+import Base.Broadcast: broadcasted
 import BandedMatrices: BandedStyle, BandedRows
 
 @testset "broadcasting" begin
@@ -17,21 +18,27 @@ import BandedMatrices: BandedStyle, BandedRows
         C = similar(A)
         @test_throws BandError C .= exp.(A)
 
+        @test identity.(A) == A
         @test identity.(A) isa BandedMatrix
         @test bandwidths(identity.(A)) == bandwidths(A)
 
+        @test (z -> exp(z)-1).(A) == (z -> exp(z)-1).(Matrix(A))
         @test (z -> exp(z)-1).(A) isa BandedMatrix
         @test bandwidths((z -> exp(z)-1).(A)) == bandwidths(A)
 
+        @test A .+ 1 == Matrix(A) .+ 1
         @test A .+ 1 isa BandedMatrix
         @test (A .+ 1) == Matrix(A) .+ 1
 
+        @test A ./ 1 == Matrix(A) ./ 1
         @test A ./ 1 isa BandedMatrix
         @test bandwidths(A ./ 1) == bandwidths(A)
 
+        @test 1 .+ A == 1 .+ Matrix(A)
         @test 1 .+ A isa BandedMatrix
         @test (1 .+ A) == 1 .+ Matrix(A)
 
+        @test 1 .\ A == 1 .\ Matrix(A)
         @test 1 .\ A isa BandedMatrix
         @test bandwidths(1 .\ A) == bandwidths(A)
 
@@ -203,7 +210,7 @@ import BandedMatrices: BandedStyle, BandedRows
         C .= A .* B
         @test C == A .* B  == Matrix(A) .* Matrix(B)
         @test A .* B isa BandedMatrix
-        @test bandwidths(A.*B) == (2,2)
+        @test bandwidths(A.*B) == (1,1)
         @time B .= A .* B
         @test B == C
 
@@ -360,10 +367,20 @@ import BandedMatrices: BandedStyle, BandedRows
         @test b .* A == b .* Matrix(A)
         @test b .* A isa BandedMatrix
         @test bandwidths(b .* A) == bandwidths(A)
+        @test A .* b == Matrix(A) .* b
+        @test A .* b isa BandedMatrix
+        @test bandwidths(A .* b) == bandwidths(A)
         @test b .\ A == b .\ Matrix(A)
         @test b .\ A isa BandedMatrix
         @test bandwidths(b .\ A) == bandwidths(A)
+        @test A ./ b == Matrix(A) ./ b
+        @test A ./ b isa BandedMatrix
+        @test bandwidths(A ./ b) == bandwidths(A)
+
+        @test bandwidths(Broadcast.broadcasted(/, b, A)) == (9,9)
         @test isinf((b ./ A)[4,1])
+        @test bandwidths(Broadcast.broadcasted(\, A,b)) == (9,9)
+        @test isinf((A .\ b)[4,1])
         
 
         @test A .* b == Matrix(A) .* b
@@ -372,9 +389,58 @@ import BandedMatrices: BandedStyle, BandedRows
         @test bandwidths(A ./ b) == bandwidths(A)
         @test isinf((A .\ b)[4,1])
         
+        @test reshape(b,10,1) .* A isa BandedMatrix
+        @test reshape(b,10,1) .* A == A .* reshape(b,10,1) == A .* b
+        @test bandwidths(reshape(b,10,1) .* A) == bandwidths(A)
+        @test bandwidths(A .* reshape(b,10,1)) == bandwidths(A)
+        
         @test b .+ A == b .+ Matrix(A) == A .+ b
 
-        @test A .+ b' == Matrix(A) .+ b'
+        @test bandwidths(broadcasted(+, A, b')) == (9,9)
+        @test A .+ b' == b' .+ A == Matrix(A) .+ b'
+        @test bandwidths(A .+ b') == bandwidths(b' .+ A)  == (9,9)
+        @test A .* b' == b' .* A == Matrix(A) .* b'
+        @test bandwidths(A .* b') == bandwidths(b' .* A) == bandwidths(A)
+    end
+
+    @testset "views" begin
+        A = BandedMatrix(Ones(10,10),(1,1))
+        B = 2A
+        view(A,8:10,:) .= view(B,8:10,:)
+        @test A[1,1] == 1.0
+        @test A[6,7] == 1.0
+        @test A[7,7] == 1.0
+        @test A[8,7] == 2.0
+
+        A = BandedMatrix{Int}(undef,(10,10),(2,2));  vec(A.data) .= (1:length(A.data));
+        B = BandedMatrix{Int}(undef,(10,10),(1,1));  vec(B.data) .= (1:length(B.data));
+        Ã = Matrix(A); B̃ = Matrix(B)
+        view(A,5:10,:) .= view(B,5:10,:)
+        view(Ã,5:10,:) .= view(B̃,5:10,:)
+        @test Ã == A
+
+        A = BandedMatrix{Int}(undef,(10,10),(2,1));  vec(A.data) .= (1:length(A.data));
+        B = BandedMatrix{Int}(undef,(10,10),(1,2));  vec(B.data) .= (1:length(B.data));
+        @test_throws BandError view(A,5:10,:) .= view(B,5:10,:)
         
+        A = BandedMatrix{Int}(undef,(10,10),(1,2));  vec(A.data) .= (1:length(A.data));
+        B = BandedMatrix{Int}(undef,(10,10),(2,1));  vec(B.data) .= (1:length(B.data));
+        @test_throws BandError view(A,5:10,:) .= view(B,5:10,:)
+
+        A = BandedMatrix{Int}(undef,(10,10),(1,2));  vec(A.data) .= (1:length(A.data));
+        B = BandedMatrix{Int}(undef,(10,10),(2,1));  vec(B.data) .= (1:length(B.data));
+        view(A,3:4,2:6) .= view(B,8:9,1:5)
+        @test A[3:4,2:6] == zeros(Int,2,5)
+        @test A[5,4] == 16
+
+        A = BandedMatrix{Int}(undef,(10,10),(1,2));  vec(A.data) .= (1:length(A.data));
+        B = BandedMatrix{Int}(undef,(10,10),(2,1));  vec(B.data) .= (1:length(B.data));
+        view(A,3:4,2:6) .= view(B,1:2,4:8)
+        @test A[3:4,:] == zeros(Int,2,10)
+
+        A = BandedMatrix{Int}(undef,(1,1),(1,1)); vec(A.data) .= 2*(1:length(A.data));
+        B = BandedMatrix{Int}(undef,(1,1),(1,1)); vec(B.data) .= (1:length(B.data));
+        view(A,2:1,2:1) .= view(B,2:1,2:1)
+        @test A[1,1] == 4
     end
 end
